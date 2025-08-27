@@ -1,17 +1,12 @@
-# ------------------------------------------------------------
-slug=slug_final,
-date_gmt=date_gmt,
-
-
-post_link = res.get("link") or res.get("guid", {}).get("rendered")
-st.success("投稿に成功しました。")
-st.json({"id": res.get("id"), "status": res.get("status"), "link": post_link})
-if post_link:
-st.markdown(f"**URL**: {post_link}")
-except Exception as e:
-st.error(f"投稿に失敗しました: {e}")
-
-
+res = client.create_post(
+    title=data["title"],
+    content_html=content_html,
+    status="draft" if not dt_local else "future",
+    categories=cats,
+    featured_media=media_id,
+    slug=slug_final,
+    date_gmt=date_gmt
+)
 
 
 # --------------------
