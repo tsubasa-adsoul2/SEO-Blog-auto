@@ -1,7 +1,6 @@
 # ------------------------------------------------------------
 slug=slug_final,
 date_gmt=date_gmt,
-)
 
 
 post_link = res.get("link") or res.get("guid", {}).get("rendered")
