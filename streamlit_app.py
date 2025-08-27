@@ -160,8 +160,9 @@ def tab_wordpress():
         st.warning("`.streamlit/secrets.toml` に [wp_configs] を設定してください。")
         return
 
-    sites = list(WP_CONFIGS.keys())
-    site_key = st.selectbox("アカウント選択", sites, key="wp_site")
+    # 表示名: 「label / キー名」
+    display_map = {k: f"{v.get('label','')}".strip()+" / "+k for k, v in WP_CONFIGS.items()}
+    site_key = st.selectbox("アカウント選択", list(display_map.keys()), format_func=lambda k: display_map[k], key="wp_site")
     cfg = WP_CONFIGS.get(site_key, {})
 
     data = article_form("wp")
@@ -248,12 +249,21 @@ def _xmlrpc_post(cfg: Dict[str, Any], title: str, html: str, publish: bool) -> s
     post_id = server.metaWeblog.newPost(cfg["blog_id"], cfg["username"], cfg["password"], post, bool(publish))
     return str(post_id)
 
+def _account_select_display(accounts: Dict[str, Any], key_prefix: str) -> str:
+    # 表示名: 「label / キー名」
+    return st.selectbox(
+        "アカウント選択",
+        list(accounts.keys()),
+        format_func=lambda k: f"{accounts[k].get('label','')} / {k}".strip(" /"),
+        key=f"{key_prefix}_acc"
+    )
+
 def tab_seesaa():
     st.subheader("Seesaa 投稿")
     if not SEESAA_ACCOUNTS:
         st.warning("secrets に [seesaa_accounts] を設定してください。")
         return
-    acc = st.selectbox("アカウント選択", list(SEESAA_ACCOUNTS.keys()), key="seesaa_acc")
+    acc = _account_select_display(SEESAA_ACCOUNTS, "seesaa")
     cfg = SEESAA_ACCOUNTS[acc]
     data = article_form("seesaa")
     is_publish = st.selectbox("公開状態", ["publish（公開）", "draft（下書き）"], key="seesaa_mode").startswith("publish")
@@ -269,7 +279,7 @@ def tab_fc2():
     if not FC2_ACCOUNTS:
         st.warning("secrets に [fc2_accounts] を設定してください。")
         return
-    acc = st.selectbox("アカウント選択", list(FC2_ACCOUNTS.keys()), key="fc2_acc")
+    acc = _account_select_display(FC2_ACCOUNTS, "fc2")
     cfg = FC2_ACCOUNTS[acc]
     data = article_form("fc2")
     is_publish = st.selectbox("公開状態", ["publish（公開）", "draft（下書き）"], key="fc2_mode").startswith("publish")
@@ -296,7 +306,7 @@ def tab_blogger():
         st.warning("secrets に [google_service_account] を設定してください。")
         return
 
-    acc = st.selectbox("アカウント選択", list(BLOGGER_ACCOUNTS.keys()), key="blogger_acc")
+    acc = _account_select_display(BLOGGER_ACCOUNTS, "blogger")
     cfg = BLOGGER_ACCOUNTS[acc]
     data = article_form("blogger")
     is_publish = st.selectbox("公開状態", ["publish（公開）", "draft（下書き）"], key="blogger_mode").startswith("publish")
@@ -397,7 +407,7 @@ def tab_livedoor():
     if not LIVEDOOR_ACCOUNTS:
         st.warning("secrets に [livedoor_accounts] を設定してください。")
         return
-    acc = st.selectbox("アカウント選択", list(LIVEDOOR_ACCOUNTS.keys()), key="livedoor_acc")
+    acc = _account_select_display(LIVEDOOR_ACCOUNTS, "livedoor")
     cfg = LIVEDOOR_ACCOUNTS[acc]
     data = article_form("livedoor")
     is_publish = st.selectbox("公開状態", ["publish（公開）", "draft（下書き）"], key="livedoor_mode").startswith("publish")
