@@ -226,6 +226,7 @@ def export_box(platform_name: str, key_prefix: str):
         file_name=f"{to_slug(data['title'] or 'post')}.html",
         mime="text/html",
         use_container_width=True,
+        key=f"{key_prefix}_download"   # 👈 追加：タブごとにユニークID
     )
 
 def tab_seesaa(): st.subheader("Seesaa（半自動）"); export_box("Seesaa", "seesaa")
