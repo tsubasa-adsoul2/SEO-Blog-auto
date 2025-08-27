@@ -15,18 +15,19 @@ res = client.create_post(
 
 
 def export_box(platform_name: str, key_prefix: str):
-st.caption(f"{platform_name}: 下記の入力を各プラットフォーム画面にコピペしてください。")
-data = article_form(key_prefix)
-st.divider()
-st.markdown("#### 出力プレビュー（HTML）")
-st.code(ensure_html_blocks(data["body"]) or "", language="html")
-st.download_button(
-label="HTMLとして保存",
-data=ensure_html_blocks(data["body"]) or "",
-file_name=f"{to_slug(data['title'] or 'post')}.html",
-mime="text/html",
-use_container_width=True,
-)
+    st.caption(f"{platform_name}: 下記の入力を各プラットフォーム画面にコピペしてください。")
+    data = article_form(key_prefix)
+    st.divider()
+    st.markdown("#### 出力プレビュー（HTML）")
+    st.code(ensure_html_blocks(data["body"]) or "", language="html")
+    st.download_button(
+        label="HTMLとして保存",
+        data=ensure_html_blocks(data["body"]) or "",
+        file_name=f"{to_slug(data['title'] or 'post')}.html",
+        mime="text/html",
+        use_container_width=True,
+    )
+
 
 
 
