@@ -1,7 +1,7 @@
 # ------------------------------------------------------------
-# streamlit_app.py — 投稿マシン 完全版
-# ・WordPress: REST(?rest_route=) / 予約投稿(JST→UTC) / アイキャッチ / カテゴリ名プルダウン
-# ・Seesaa/FC2: XML-RPC 自動投稿（publish/draft）
+# streamlit_app.py — 投稿マシン 完全版（予約UI付き）
+# ・WordPress: REST / 予約投稿(JST→UTC) / アイキャッチ / カテゴリ名プルダウン
+# ・Seesaa/FC2: XML-RPC 自動投稿（publish/draft）+ 疑似予約UI（タイトルに時刻タグ）
 # ・Blogger: Google API 自動投稿（Service Account）
 # ・Livedoor: Cookieログイン + フォームPOST 自動投稿（confirm/final両対応）
 # ・複数アカウント切替（Secretsに定義）
@@ -17,9 +17,8 @@ import re
 import unicodedata
 import io
 import xmlrpc.client
-from bs4 import BeautifulSoup
 
-# Blogger 用（未インストールでも起動できるように）
+# 依存が未インストールでも起動可能にするためのガード
 try:
     from googleapiclient.discovery import build
     from google.oauth2 import service_account
@@ -27,14 +26,20 @@ try:
 except Exception:
     HAS_GOOGLE = False
 
+try:
+    from bs4 import BeautifulSoup
+    HAS_BS4 = True
+except Exception:
+    HAS_BS4 = False
+
 
 # =========================
-# ユーティリティ
+# 共通ユーティリティ
 # =========================
 def to_slug(text: str, max_len: int = 80) -> str:
     s = unicodedata.normalize("NFKC", text or "").lower()
-    s = re.sub(r"[^a-z0-9\\s-]", "", s)
-    s = re.sub(r"[\\s-]+", "-", s).strip("-")
+    s = re.sub(r"[^a-z0-9\s-]", "", s)
+    s = re.sub(r"[\s-]+", "-", s).strip("-")
     return (s[:max_len] or "post")
 
 def ensure_html_blocks(html: str) -> str:
@@ -43,20 +48,24 @@ def ensure_html_blocks(html: str) -> str:
         return ""
     lowered = s.lower()
     if ("<p>" not in lowered) and ("<h" not in lowered) and ("<ul" not in lowered) and ("<ol" not in lowered):
-        s = "\\n".join(f"<p>{line}</p>" for line in s.splitlines() if line.strip())
+        s = "\n".join(f"<p>{line}</p>" for line in s.splitlines() if line.strip())
     return s
 
 def jst_to_utc_iso(local_dt: datetime) -> str:
     utc_dt = local_dt - timedelta(hours=9)  # JST→UTC
     return utc_dt.strftime("%Y-%m-%dT%H:%M:%S")
 
-def _kv_list_to_dict(kv_list: List[str]) -> Dict[str, str]:
-    out = {}
-    for line in kv_list or []:
-        if "=" in line:
-            k, v = line.split("=", 1)
-            out[k.strip()] = v.strip()
-    return out
+# 疑似予約用（タイトルタグ生成）
+SCHEDULE_TAG_RE = re.compile(r'^\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]\s*')
+def compose_title_with_schedule(raw_title: str, date_obj, time_obj) -> str:
+    """タイトル先頭に [YYYY-MM-DD HH:MM] を付与。既存の予約タグがあれば除去してから付与。"""
+    if not raw_title:
+        return raw_title
+    base = SCHEDULE_TAG_RE.sub("", raw_title.strip())
+    if not date_obj or not time_obj:
+        return base
+    ts = f"{date_obj.strftime('%Y-%m-%d')} {time_obj.strftime('%H:%M')}"
+    return f"[{ts}] {base}"
 
 
 # =========================
@@ -129,7 +138,7 @@ class WordPressClient:
 # Streamlit ベース
 # =========================
 st.set_page_config(page_title="投稿マシン", layout="wide")
-st.title("📤 投稿マシン — 完全版")
+st.title("📤 投稿マシン — 完全版（予約UI付き）")
 
 # Secrets 読み込み
 WP_CONFIGS: Dict[str, Any] = st.secrets.get("wp_configs", {})
@@ -138,6 +147,7 @@ FC2_ACCOUNTS: Dict[str, Any] = st.secrets.get("fc2_accounts", {})
 BLOGGER_ACCOUNTS: Dict[str, Any] = st.secrets.get("blogger_accounts", {})
 LIVEDOOR_ACCOUNTS: Dict[str, Any] = st.secrets.get("livedoor_accounts", {})
 GOOGLE_SA: Dict[str, Any] = dict(st.secrets.get("google_service_account", {}))
+
 
 def article_form(key_prefix: str) -> Dict[str, Any]:
     c1, c2 = st.columns([3, 2])
@@ -148,6 +158,14 @@ def article_form(key_prefix: str) -> Dict[str, Any]:
     with c2:
         st.caption("改行テキストは自動で <p> に変換します。画像は本文内に挿入してください。")
     return {"title": title, "slug": slug_custom, "body": body}
+
+def _account_select_display(accounts: Dict[str, Any], key_prefix: str) -> str:
+    return st.selectbox(
+        "アカウント選択",
+        list(accounts.keys()),
+        format_func=lambda k: f"{accounts[k].get('label','')} / {k}".strip(" /"),
+        key=f"{key_prefix}_acc"
+    )
 
 
 # =========================
@@ -160,7 +178,6 @@ def tab_wordpress():
         st.warning("`.streamlit/secrets.toml` に [wp_configs] を設定してください。")
         return
 
-    # 表示名: 「label / キー名」
     display_map = {k: f"{v.get('label','')}".strip()+" / "+k for k, v in WP_CONFIGS.items()}
     site_key = st.selectbox("アカウント選択", list(display_map.keys()), format_func=lambda k: display_map[k], key="wp_site")
     cfg = WP_CONFIGS.get(site_key, {})
@@ -178,8 +195,8 @@ def tab_wordpress():
     with col2:
         sched_toggle = st.checkbox("予約投稿する", key="wp_sched_toggle")
         if sched_toggle:
-            sched_date = st.date_input("予約日", key="wp_date")
-            sched_time = st.time_input("予約時刻", key="wp_time")
+            sched_date = st.date_input("予約日（JST）", key="wp_date")
+            sched_time = st.time_input("予約時刻（JST）", key="wp_time")
         else:
             sched_date = None
             sched_time = None
@@ -241,7 +258,7 @@ def tab_wordpress():
 
 
 # =========================
-# Seesaa / FC2（XML-RPC）
+# Seesaa（XML-RPC）— 予約UI対応
 # =========================
 def _xmlrpc_post(cfg: Dict[str, Any], title: str, html: str, publish: bool) -> str:
     server = xmlrpc.client.ServerProxy(cfg["endpoint"])
@@ -249,44 +266,108 @@ def _xmlrpc_post(cfg: Dict[str, Any], title: str, html: str, publish: bool) -> s
     post_id = server.metaWeblog.newPost(cfg["blog_id"], cfg["username"], cfg["password"], post, bool(publish))
     return str(post_id)
 
-def _account_select_display(accounts: Dict[str, Any], key_prefix: str) -> str:
-    # 表示名: 「label / キー名」
-    return st.selectbox(
-        "アカウント選択",
-        list(accounts.keys()),
-        format_func=lambda k: f"{accounts[k].get('label','')} / {k}".strip(" /"),
-        key=f"{key_prefix}_acc"
-    )
-
 def tab_seesaa():
-    st.subheader("Seesaa 投稿")
+    st.subheader("Seesaa 投稿（予約タグ付与 UI）")
+
     if not SEESAA_ACCOUNTS:
         st.warning("secrets に [seesaa_accounts] を設定してください。")
         return
+
     acc = _account_select_display(SEESAA_ACCOUNTS, "seesaa")
     cfg = SEESAA_ACCOUNTS[acc]
     data = article_form("seesaa")
-    is_publish = st.selectbox("公開状態", ["publish（公開）", "draft（下書き）"], key="seesaa_mode").startswith("publish")
+
+    c1, c2, c3 = st.columns([1.2, 1.2, 2])
+    with c1:
+        publish_mode = st.selectbox("公開状態", ["publish（公開）", "draft（下書き）"], key="seesaa_mode")
+    with c2:
+        use_schedule = st.checkbox("予約（疑似）を使う", value=False, key="seesaa_use_schedule")
+        if use_schedule:
+            st.caption("※予約はタイトルに時刻タグを付ける方式。実公開は外部バッチ（例: GitHub Actions）で行います。")
+    with c3:
+        if use_schedule:
+            sched_date = st.date_input("予約日（JST）", key="seesaa_date")
+            sched_time = st.time_input("予約時刻（JST）", key="seesaa_time")
+        else:
+            sched_date = None
+            sched_time = None
+
+    # 最終タイトルのプレビュー
+    title_preview = compose_title_with_schedule(data["title"], sched_date, sched_time) if use_schedule else data["title"]
+    st.markdown("#### 最終タイトル（プレビュー）")
+    st.code(title_preview or "", language="text")
+
+    # 予約を使う場合は publish を強制的に draft にする
+    effective_publish = publish_mode.startswith("publish") and (not use_schedule)
+    if use_schedule and publish_mode.startswith("publish"):
+        st.info("予約を選んだため、この投稿は **下書き** で保存されます（時刻到来後に外部バッチが公開に変更）。")
+
     if st.button("Seesaaへ投稿", key="seesaa_submit"):
         try:
-            post_id = _xmlrpc_post(cfg, data["title"], ensure_html_blocks(data["body"]), is_publish)
-            st.success(f"投稿成功 ID: {post_id}")
+            final_title = title_preview
+            if not final_title or not data["body"]:
+                st.warning("タイトルと本文は必須です。")
+                st.stop()
+            html_body = ensure_html_blocks(data["body"])
+            post_id = _xmlrpc_post(cfg=cfg, title=final_title, html=html_body, publish=bool(effective_publish))
+            if use_schedule:
+                st.success(f"下書き（予約タグ付）で保存しました。ID: {post_id}")
+                st.caption("※GitHub Actions などの外部バッチが、予定時刻を過ぎたものを自動で公開へ切り替えます。")
+            else:
+                st.success(f"投稿成功 ID: {post_id}")
         except Exception as e:
             st.error(f"投稿失敗: {e}")
 
+
+# =========================
+# FC2（XML-RPC）— 予約UI対応
+# =========================
 def tab_fc2():
-    st.subheader("FC2 投稿")
+    st.subheader("FC2 投稿（予約タグ付与 UI）")
+
     if not FC2_ACCOUNTS:
         st.warning("secrets に [fc2_accounts] を設定してください。")
         return
+
     acc = _account_select_display(FC2_ACCOUNTS, "fc2")
     cfg = FC2_ACCOUNTS[acc]
     data = article_form("fc2")
-    is_publish = st.selectbox("公開状態", ["publish（公開）", "draft（下書き）"], key="fc2_mode").startswith("publish")
+
+    c1, c2, c3 = st.columns([1.2, 1.2, 2])
+    with c1:
+        publish_mode = st.selectbox("公開状態", ["publish（公開）", "draft（下書き）"], key="fc2_mode")
+    with c2:
+        use_schedule = st.checkbox("予約（疑似）を使う", value=False, key="fc2_use_schedule")
+        if use_schedule:
+            st.caption("※予約はタイトルに時刻タグを付ける方式。実公開は外部バッチで行います。")
+    with c3:
+        if use_schedule:
+            sched_date = st.date_input("予約日（JST）", key="fc2_date")
+            sched_time = st.time_input("予約時刻（JST）", key="fc2_time")
+        else:
+            sched_date = None
+            sched_time = None
+
+    title_preview = compose_title_with_schedule(data["title"], sched_date, sched_time) if use_schedule else data["title"]
+    st.markdown("#### 最終タイトル（プレビュー）")
+    st.code(title_preview or "", language="text")
+
+    effective_publish = publish_mode.startswith("publish") and (not use_schedule)
+    if use_schedule and publish_mode.startswith("publish"):
+        st.info("予約を選んだため、この投稿は **下書き** で保存されます（時刻到来後に外部バッチが公開に変更）。")
+
     if st.button("FC2へ投稿", key="fc2_submit"):
         try:
-            post_id = _xmlrpc_post(cfg, data["title"], ensure_html_blocks(data["body"]), is_publish)
-            st.success(f"投稿成功 ID: {post_id}")
+            final_title = title_preview
+            if not final_title or not data["body"]:
+                st.warning("タイトルと本文は必須です。")
+                st.stop()
+            html_body = ensure_html_blocks(data["body"])
+            post_id = _xmlrpc_post(cfg=cfg, title=final_title, html=html_body, publish=bool(effective_publish))
+            if use_schedule:
+                st.success(f"下書き（予約タグ付）で保存しました。ID: {post_id}")
+            else:
+                st.success(f"投稿成功 ID: {post_id}")
         except Exception as e:
             st.error(f"投稿失敗: {e}")
 
@@ -316,12 +397,7 @@ def tab_blogger():
             SCOPES = ["https://www.googleapis.com/auth/blogger"]
             creds = service_account.Credentials.from_service_account_info(GOOGLE_SA, scopes=SCOPES)
             service = build("blogger", "v3", credentials=creds)
-
-            body = {
-                "kind": "blogger#post",
-                "title": data["title"],
-                "content": ensure_html_blocks(data["body"]),
-            }
+            body = {"kind": "blogger#post", "title": data["title"], "content": ensure_html_blocks(data["body"])}
             post = service.posts().insert(blogId=cfg["blog_id"], body=body, isDraft=(not is_publish)).execute()
             st.success(f"投稿成功: {post.get('url')}")
         except Exception as e:
@@ -332,6 +408,8 @@ def tab_blogger():
 # Livedoor（Cookieログイン + POST）
 # =========================
 def livedoor_login_and_post(cfg: Dict[str, Any], title: str, html_content: str, publish: bool = True) -> Dict[str, Any]:
+    if not HAS_BS4:
+        raise RuntimeError("beautifulsoup4 が未インストールです。requirements.txt に追加してください。")
     s = requests.Session()
     s.headers.update({"User-Agent": "Mozilla/5.0"})
 
@@ -351,14 +429,12 @@ def livedoor_login_and_post(cfg: Dict[str, Any], title: str, html_content: str, 
     soup = BeautifulSoup(r.text, "lxml")
 
     payload: Dict[str, str] = {}
-    # 2-1) hidden の吸い上げ
     for inp in soup.select("input[type=hidden]"):
         name = inp.get("name")
         if not name:
             continue
         payload[name] = inp.get("value", "")
 
-    # 2-2) CSRF
     csrf_sel = cfg.get("csrf_selector")
     csrf_field = cfg.get("csrf_field", "csrf_token")
     if csrf_sel:
@@ -367,20 +443,19 @@ def livedoor_login_and_post(cfg: Dict[str, Any], title: str, html_content: str, 
             raise RuntimeError("CSRF token not found (selector mismatch)")
         payload[csrf_field] = node.get("value", "")
 
-    # 3) 記事フィールド
     payload[cfg.get("title_field", "title")] = title
     payload[cfg.get("body_field", "body")]   = html_content
 
-    # 3-1) 公開/下書き
     if publish and cfg.get("publish_field"):
         payload[cfg["publish_field"]] = cfg.get("publish_value", "1")
     if (not publish) and cfg.get("draft_field"):
         payload[cfg["draft_field"]] = cfg.get("draft_value", "1")
 
-    # 3-2) 任意追加
-    payload.update(_kv_list_to_dict(cfg.get("extra_kv", [])))
+    for line in (cfg.get("extra_kv") or []):
+        if "=" in line:
+            k, v = line.split("=", 1)
+            payload[k.strip()] = v.strip()
 
-    # 4) POST（confirm → final の2段階に対応）
     if cfg.get("confirm_url") and cfg.get("final_submit_url"):
         r1 = s.post(cfg["confirm_url"], data=payload, timeout=30)
         if r1.status_code >= 400:
@@ -406,6 +481,9 @@ def tab_livedoor():
     st.subheader("Livedoor 投稿（Cookieログイン自動投稿）")
     if not LIVEDOOR_ACCOUNTS:
         st.warning("secrets に [livedoor_accounts] を設定してください。")
+        return
+    if not HAS_BS4:
+        st.warning("Livedoor投稿には beautifulsoup4 / lxml が必要です。requirements.txt に追加してください。")
         return
     acc = _account_select_display(LIVEDOOR_ACCOUNTS, "livedoor")
     cfg = LIVEDOOR_ACCOUNTS[acc]
