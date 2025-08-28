@@ -1,0 +1,29 @@
+name: Seesaa Scheduled Publisher
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"  # 5分おき（UTC）。JSTとは+9時間の差があります
+  workflow_dispatch: {}     # 手動実行も可
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install xmlrpc-client==0.0.1 || true  # 実際は標準ライブラリでOKだが念のためno-op
+      - name: Run scheduler
+        env:
+          TZ: Asia/Tokyo
+          SEESAA_ACCOUNTS_JSON: ${{ secrets.SEESAA_ACCOUNTS_JSON }}
+        run: |
+          python seesaa_scheduler.py
