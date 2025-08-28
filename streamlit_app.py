@@ -261,10 +261,32 @@ def tab_wordpress():
 # Seesaa（XML-RPC）— 予約UI対応
 # =========================
 def _xmlrpc_post(cfg: Dict[str, Any], title: str, html: str, publish: bool) -> str:
+    """
+    一部サービスでは publish=False が無視されるため、
+    明示的に post_status='draft' を構造体に入れる。
+    """
     server = xmlrpc.client.ServerProxy(cfg["endpoint"])
-    post = {"title": title, "description": html}
-    post_id = server.metaWeblog.newPost(cfg["blog_id"], cfg["username"], cfg["password"], post, bool(publish))
+
+    post_struct = {
+        "title": title,
+        "description": html,
+    }
+    if not publish:
+        # 下書き強制（Seesaa/FC2 対策）
+        post_struct["post_status"] = "draft"       # metaWeblog 拡張
+        post_struct["mt_publish"] = 0              # 念のため（実装によって読む場合がある）
+        post_struct["publish"] = False             # 念のため
+
+    # 第5引数 publish も False を渡す（両建て）
+    post_id = server.metaWeblog.newPost(
+        cfg["blog_id"],
+        cfg["username"],
+        cfg["password"],
+        post_struct,
+        bool(publish)
+    )
     return str(post_id)
+
 
 def tab_seesaa():
     st.subheader("Seesaa 投稿（予約タグ付与 UI）")
@@ -301,6 +323,10 @@ def tab_seesaa():
     effective_publish = publish_mode.startswith("publish") and (not use_schedule)
     if use_schedule and publish_mode.startswith("publish"):
         st.info("予約を選んだため、この投稿は **下書き** で保存されます（時刻到来後に外部バッチが公開に変更）。")
+
+    # 追加で念押し（予約ONなら無条件で下書き化）
+    if use_schedule:
+        effective_publish = False
 
     if st.button("Seesaaへ投稿", key="seesaa_submit"):
         try:
